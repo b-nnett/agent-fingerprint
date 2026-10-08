@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createAgentRoute } from '../dist/next.js';
+import { classify, referenceProfiles } from '../dist/index.js';
+import { collect } from '../dist/client.js';
+const body={v:2,t:new Date().toISOString(),h:'a'.repeat(64),ms:1,d:{},r:{},b:{},n:{}};
+const request=(value=body,headers={})=>new Request('https://example.com/api/agent',{method:'POST',headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(value)});
+test('Next route classifies and invokes persistence hook once',async()=>{let saved=0;const POST=createAgentRoute({references:[],onCapture:({evidence,classification,request})=>{saved++;assert.equal(evidence.h,body.h);assert.equal(classification.suspectedIdentity,'Codex Browser');assert.equal(request.url,'https://example.com/api/agent');return{id:'capture'};}});const response=await POST(request(body,{'user-agent':'CodexBrowser'}));assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');assert.equal((await response.json()).id,'capture');assert.equal(saved,1);});
+test('Unknown visitors are not assigned a real browser identity',async()=>{const response=await createAgentRoute()(request());assert.equal((await response.json()).suspectedIdentity,'Unknown');});
+test('rejects cross-origin, malformed, oversized reports before persistence',async()=>{let saved=0;const POST=createAgentRoute({onCapture:()=>{saved++;}});assert.equal((await POST(request(body,{origin:'https://other.com'}))).status,403);assert.equal((await POST(request([]))).status,400);assert.equal((await createAgentRoute({maxBodyBytes:10})(request())).status,413);assert.equal((await POST(request({...body,r:{fonts:{fonts:[{},{}]},canvas:{metrics:{a:1}},webgl:{hash:'x',unmaskedRenderer:'x'},audio:{sum:1},math:{strHash:'x'}}}))).status,200);assert.equal(saved,1);});
+test('persistence and reference failures return 503',async()=>{assert.equal((await createAgentRoute({onCapture:()=>{throw Error('private');}})(request())).status,503);assert.equal((await createAgentRoute({references:()=>{throw Error('private');}})(request())).status,503);});
+test('packaged profiles reproduce every distinct provider reference',()=>{for(const ref of referenceProfiles){const result=classify(ref.evidence);assert.ok([ref.origin,'Unknown'].includes(result.probableOrigin),`${ref.id}: ${result.probableOrigin} vs ${ref.origin}`);}});
+test('collection is browser-only and importing it is safe on the server',async()=>{await assert.rejects(collect(),/requires a browser/);});
